@@ -3,6 +3,8 @@ from __future__ import annotations
 import pandas as pd, numpy as np, re, json
 from io import BytesIO
 from datetime import datetime
+from html import escape
+
 
 # ---------- Template ----------
 TEMPLATE_COLUMNS = [
