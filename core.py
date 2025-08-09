@@ -414,8 +414,8 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
 
 # ---------- Rapport HTML ----------
 def report_html_bytes(df_out: pd.DataFrame, stats: dict, errors: list[str], warnings: list[str]) -> bytes:
-def li(items):
-    return "".join(f"<li>{escape(str(x))}</li>" for x in items)
+    def li(items):
+        return "".join(f"<li>{escape(str(x))}</li>" for x in items)
     html = f"""
 <!doctype html><html><head><meta charset="utf-8"><title>Rapport Import</title>
 <style>
