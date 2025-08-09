@@ -4,6 +4,8 @@ import pandas as pd, numpy as np, re, json
 from io import BytesIO
 from datetime import datetime
 from html import escape
+import unicodedata
+
 
 
 # ---------- Template ----------
@@ -155,19 +157,29 @@ COMMON_FEMALE_FIRSTNAMES = {"marie","claire","camille","julie","emma","lea","lé
 COMMON_MALE_FIRSTNAMES = {"pierre","paul","jean","louis","lucas","nathan","thomas","hugo","arthur","leo","léo",
     "maxime","antoine","julien","mathieu","alexandre","baptiste","nicolas","yanis"}
 
+def _norm_firstname(x: str) -> str:
+    s = str(x or "").strip()
+    if not s: return ""
+    # prendre le premier composant (avant espace / tiret)
+    s = re.split(r"[\s\-]+", s)[0]
+    # enlever les accents
+    s = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+    return s.lower()
+
 try:
     import gender_guesser.detector as _gg
     _GG = _gg.Detector(case_sensitive=False)
     def deduce_civility_from_firstname(firstname: str) -> str:
-        if not firstname: return ""
-        g = _GG.get_gender(str(firstname))
+        f = _norm_firstname(firstname)
+        if not f: return ""
+        g = _GG.get_gender(f)
         if g in ("female","mostly_female"): return "Mme"
         if g in ("male","mostly_male"):     return "M."
         return ""
 except Exception:
     def deduce_civility_from_firstname(firstname: str) -> str:
-        if not firstname: return ""
-        f = str(firstname).strip().lower()
+        f = _norm_firstname(firstname)
+        if not f: return ""
         if f in COMMON_FEMALE_FIRSTNAMES: return "Mme"
         if f in COMMON_MALE_FIRSTNAMES:   return "M."
         return ""
@@ -303,11 +315,13 @@ def suggest_user_type(val: str) -> str | None:
 
 # ---------- Process principal ----------
 def process(
-    df: pd.DataFrame, mapping: dict,
-    correct_dates: bool=True, uppercase_names: bool=True,
-    user_type_map: dict | None=None,
-    auto_civility: bool=True, auto_user_type: bool=True,
-    strict: bool=False
+    df, mapping,
+    correct_dates=True, uppercase_names=True,
+    user_type_map=None, auto_civility=True, auto_user_type=True,
+    strict=False,
+    civil_fallback="" ,                         # "", "M.", "Mme"
+    default_user_type_when_missing=None,        # None, "1", "5"
+    require_user_type_choice=False              # True => bloquer si manquant
 ):
     user_type_map = user_type_map or {}
     errors, warnings = [], []
@@ -331,14 +345,28 @@ def process(
             for i,t in enumerate(TEMPLATE_COLUMNS):
                 s = str(raw.get(i,"") if raw.get(i) is not None else "").strip()
                 new = s
+                # Post-traitement Type utilisateur manquant
+type_idx = 6
+if row_has_data:
+    if not out[type_idx] or out[type_idx] not in ("1","5"):
+        if require_user_type_choice and default_user_type_when_missing is None:
+            raise ValueError("TYPE_UTILISATEUR_MANQUANT")
+        if default_user_type_when_missing in ("1","5"):
+            out[type_idx] = default_user_type_when_missing
+            warnings.append(f"Ligne {ridx}: Type manquant → fallback '{default_user_type_when_missing}'")
 
-                if i == 2:  # Civilité
-                    new = format_civilite(s)
-                    if not new and auto_civility and prenom_raw:
-                        ded = deduce_civility_from_firstname(prenom_raw)
-                        if ded:
-                            new = ded
-                            warnings.append(f"Ligne {ridx}: Civilité déduite depuis le prénom '{prenom_raw}' → '{ded}'")
+
+elif i == 2:  # Civilité
+    new = format_civilite(s)
+    if not new and auto_civility and prenom_raw:
+        ded = deduce_civility_from_firstname(prenom_raw)
+        if ded:
+            new = ded
+            warnings.append(f"Ligne {ridx}: Civilité déduite depuis le prénom '{prenom_raw}' → '{ded}'")
+    if not new and civil_fallback in ("M.","Mme"):
+        new = civil_fallback
+        warnings.append(f"Ligne {ridx}: Civilité manquante, fallback '{civil_fallback}'")
+
 
                 elif i == 3:  # Prénom
                     new = s.title() if s else s
@@ -346,20 +374,24 @@ def process(
                 elif i in [4,5]:  # Noms
                     new = s.upper() if (s and uppercase_names) else s
 
-                elif i == 6:  # Type utilisateur
-                    if s in ['1','5']:
-                        new = s
-                    elif s in user_type_map:
-                        new = user_type_map[s]
-                        warnings.append(f"Ligne {ridx}: Type '{s}' → '{new}' (mapping)")
-                    elif auto_user_type:
-                        sug = suggest_user_type(s)
-                        if sug:
-                            new = sug
-                            warnings.append(f"Ligne {ridx}: Type '{s}' → '{sug}' (déduit)")
-                        elif mapping.get("Type d'utilisateur* (Diplômé [1] / Etudiant [5])") is None:
-                            has_company = any(str(raw.get(j,"")).strip() for j in [31,34])  # Entreprise - Nom / SIRET
-                            new = '1' if has_company else s
+elif i == 6:  # Type utilisateur
+    if s in ['1','5']:
+        new = s
+    elif s in (user_type_map or {}):
+        new = user_type_map[s]
+        warnings.append(f"Ligne {ridx}: Type '{s}' → '{new}' (mapping)")
+    elif auto_user_type:
+        sug = suggest_user_type(s)
+        if sug:
+            new = sug
+            warnings.append(f"Ligne {ridx}: Type '{s}' → '{sug}' (déduit)")
+        elif mapping.get("Type d'utilisateur* (Diplômé [1] / Etudiant [5])") is None:
+            has_company = any(str(raw.get(j,"")).strip() for j in [31,34])  # Entreprise / SIRET
+            new = '1' if has_company else s
+
+    # gestion manquant en fin de boucle
+    # (on posera la valeur après le switch si besoin)
+
 
                 elif i in [7,13,14,44,45]:  # dates
                     new = format_date(s) if (s and correct_dates) else s
