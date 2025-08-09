@@ -2,7 +2,6 @@ from __future__ import annotations
 import pandas as pd, numpy as np, re, json, unicodedata
 from io import BytesIO
 from datetime import datetime
-from html import escape
 
 # ---------- Template ----------
 TEMPLATE_COLUMNS = [
@@ -54,7 +53,7 @@ TEMPLATE_COLUMNS = [
     "Fin de l'expérience (jj/mm/aaaa)"
 ]
 
-# ---------- Lecture robuste ----------
+# ---------- Lecture robuste (CSV/XLSX) ----------
 def _detect_encoding(file_obj) -> str:
     try:
         import chardet
@@ -82,7 +81,7 @@ def read_table(upload, filename: str) -> pd.DataFrame:
     upload.seek(0)
     return pd.read_csv(upload, sep=None, engine='python', encoding=enc)
 
-# ---------- Mapping auto (scoring mots-clés) ----------
+# ---------- Auto-mapping (scoring mots-clés) ----------
 KEYWORDS = {
     'Identifiant utilisateurs*': ['identifiant','id','matricule','code'],
     'Civilité (M. / Mme)': ['civilite','civilité','mr','mme','genre','titre'],
@@ -152,6 +151,7 @@ def _norm_firstname(x: str) -> str:
     s = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
     return s.lower()
 
+# Déduction civilité : gender-guesser si dispo, sinon sets simples
 try:
     import gender_guesser.detector as _gg
     _GG = _gg.Detector(case_sensitive=False)
@@ -207,62 +207,40 @@ def format_boolean(value: str) -> str:
     if v in ['non','n','no','0','false','faux','']: return '0'
     return v
 
-def _iso2_from_name(name: str) -> str | None:
-    try:
-        import pycountry
-        n = name.upper()
-        for c in pycountry.countries:
-            if n in {c.name.upper(), getattr(c, 'official_name', '').upper()}:
-                return c.alpha_2
-        for c in pycountry.countries:
-            if n in c.name.upper() or c.name.upper() in n:
-                return c.alpha_2
-    except Exception:
-        pass
-    fallback = {'FRANCE':'FR','BELGIQUE':'BE','SUISSE':'CH','ALLEMAGNE':'DE','ESPAGNE':'ES','ITALIE':'IT',
-                'ROYAUME-UNI':'GB','LUXEMBOURG':'LU','PAYS-BAS':'NL','PORTUGAL':'PT','ETATS-UNIS':'US','CANADA':'CA',
-                'MAROC':'MA','ALGERIE':'DZ','TUNISIE':'TN','SENEGAL':'SN',"COTE D'IVOIRE":'CI','CAMEROUN':'CM'}
-    for k,v in fallback.items():
-        if k in name.upper() or name.upper() in k: return v
-    return None
+# Pays : table légère FR/EU + fallback 2 lettres
+FALLBACK_COUNTRIES = {
+    'FRANCE':'FR','BELGIQUE':'BE','SUISSE':'CH','ALLEMAGNE':'DE','ESPAGNE':'ES','ITALIE':'IT',
+    'ROYAUME-UNI':'GB','LUXEMBOURG':'LU','PAYS-BAS':'NL','PORTUGAL':'PT','ETATS-UNIS':'US','CANADA':'CA',
+    'MAROC':'MA','ALGERIE':'DZ','TUNISIE':'TN','SENEGAL':'SN',"COTE D'IVOIRE":'CI','CAMEROUN':'CM'
+}
 
 def format_country(value: str, warnings, rownum, strict: bool) -> str:
     s = str(value).strip()
     if not s: return ""
     if len(s) == 2 and s.isalpha(): return s.upper()
-    code = _iso2_from_name(s)
-    if not code:
-        msg = f"Ligne {rownum}: Pays non reconnu '{value}'"
-        if strict: raise ValueError(msg)
-        warnings.append(msg)
-        return s[:2].upper() if len(s)>=2 else s
-    return code
+    up = s.upper()
+    for k,v in FALLBACK_COUNTRIES.items():
+        if k in up or up in k:
+            return v
+    msg = f"Ligne {rownum}: Pays non reconnu '{value}'"
+    if strict: raise ValueError(msg)
+    warnings.append(msg)
+    return s[:2].upper() if len(s)>=2 else s
 
+# Téléphones : heuristique FR simple (+ avertissements)
 def format_phone(value: str, warnings, rownum, strict: bool) -> str:
     s = re.sub(r'\D', '', str(value))
     if not s: return ""
-    try:
-        import phonenumbers
-        if s.startswith('0') and len(s)==10:
-            parsed = phonenumbers.parse(s, "FR")
-        else:
-            parsed = phonenumbers.parse(s, None)
-        if not phonenumbers.is_valid_number(parsed):
-            raise Exception("invalid")
-        region = phonenumbers.region_code_for_number(parsed)
-        if region == "FR":
-            nat = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.NATIONAL)
-            return re.sub(r'\D','', nat)
-        else:
-            return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
-    except Exception:
-        msg = f"Ligne {rownum}: Téléphone suspect '{value}'"
+    # FR : autorise 0XXXXXXXXX ; tolère +33/0033
+    if s.startswith('33') and len(s)==11: s = '0'+s[2:]
+    if s.startswith('0033') and len(s)==13: s = '0'+s[4:]
+    if s.startswith('0') and len(s) != 10:
+        msg = f"Ligne {rownum}: Téléphone suspect '{value}' ({len(s)} chiffres)"
         if strict: raise ValueError(msg)
         warnings.append(msg)
-        if s.startswith('33') and len(s)==11: s = '0'+s[2:]
-        if s.startswith('0033') and len(s)==13: s = '0'+s[4:]
-        return s
+    return s
 
+# SIRET (Luhn)
 def _luhn_ok(num: str) -> bool:
     s = [int(d) for d in re.sub(r'\D','', num)]
     if not s: return False
@@ -299,7 +277,7 @@ def process(
     strict: bool=False,
     civil_fallback: str="",                    # "", "M.", "Mme"
     default_user_type_when_missing: str | None=None,  # None / "1" / "5"
-    require_user_type_choice: bool=False       # si True et manquant => ValueError
+    require_user_type_choice: bool=False
 ):
     user_type_map = user_type_map or {}
     errors, warnings = [], []
@@ -416,38 +394,3 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
         )
     bio.seek(0)
     return bio.getvalue()
-
-# ---------- Rapport HTML ----------
-def report_html_bytes(df_out: pd.DataFrame, stats: dict, errors: list[str], warnings: list[str]) -> bytes:
-    def li(items):
-        return "".join(f"<li>{escape(str(x))}</li>" for x in items)
-    html = f"""
-<!doctype html><html><head><meta charset="utf-8"><title>Rapport Import</title>
-<style>
-body{{font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial; margin:24px; color:#111827}}
-h1,h2{{margin:0 0 8px}} .muted{{color:#6B7280}}
-.card{{border:1px solid #E5E7EB; border-radius:10px; padding:16px; margin:12px 0}}
-.kpis{{display:flex; gap:12px; flex-wrap:wrap}}
-.kpi{{border:1px solid #E5E7EB; border-radius:10px; padding:10px 12px}}
-</style></head><body>
-<h1>Rapport d'import</h1>
-<p class="muted">Généré le {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
-<div class="kpis">
-<div class="kpi">Lignes traitées: <b>{stats.get("total_rows",0)}</b></div>
-<div class="kpi">Lignes valides: <b>{stats.get("valid_rows",0)}</b></div>
-<div class="kpi">Champs corrigés: <b>{stats.get("corrected_fields",0)}</b></div>
-<div class="kpi">Erreurs: <b>{len(errors)}</b></div>
-<div class="kpi">Avertissements: <b>{len(warnings)}</b></div>
-</div>
-<div class="card"><h2>Erreurs</h2><ul>{li(errors) if errors else "<li>Aucune</li>"}</ul></div>
-<div class="card"><h2>Avertissements</h2><ul>{li(warnings) if warnings else "<li>Aucun</li>"}</ul></div>
-</body></html>
-"""
-    return html.encode("utf-8")
-
-# ---------- Presets mapping ----------
-def mapping_to_json(mapping: dict) -> bytes:
-    return json.dumps(mapping, ensure_ascii=False, indent=2).encode("utf-8")
-
-def mapping_from_json(b: bytes) -> dict:
-    return json.loads(b.decode("utf-8"))
