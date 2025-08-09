@@ -11,7 +11,7 @@ st.set_page_config(page_title="Import Utilisateur", page_icon="📦", layout="wi
 st.title("📦 Import Utilisateur")
 st.caption("Uploader → Mapper → Formater → Télécharger")
 
-# ---- Sidebar : options essentielles
+# ---- Sidebar : options
 with st.sidebar:
     st.header("Options")
     correct_dates   = st.checkbox("Corriger les dates", value=True)
@@ -19,9 +19,15 @@ with st.sidebar:
     auto_civility   = st.checkbox("Déduire civilité (si vide) depuis le prénom", value=True)
     auto_user_type  = st.checkbox("Déduire type utilisateur si ambigu/absent", value=True)
     strict          = st.toggle("Mode strict (erreurs bloquantes)", value=False)
+    civil_fallback  = st.selectbox("Si civilité introuvable →", ["(laisser vide)", "M.", "Mme"], index=0)
+    missing_type_mode = st.radio(
+        "Si type utilisateur manquant →",
+        ["Me demander", "Forcer 1 (Diplômé)", "Forcer 5 (Étudiant)", "Laisser vide"],
+        horizontal=False
+    )
     out_fmt         = st.radio("Format de sortie", ["CSV", "Excel"], horizontal=True)
     st.divider()
-    st.caption("Astuce : enregistrez votre mapping en preset pour vos prochains imports.")
+    st.caption("Astuce : enregistrez un preset de mapping pour les prochains imports.")
 
 uploaded = st.file_uploader("Déposez un fichier (.csv / .xlsx)", type=["csv", "xlsx", "xls"])
 if not uploaded:
@@ -37,10 +43,8 @@ except Exception as e:
 
 st.success(f"Fichier chargé : **{uploaded.name}** — {df.shape[0]} lignes × {df.shape[1]} colonnes")
 
-# ---- Tabs sobres
 tab_map, tab_result, tab_log = st.tabs(["Mapping", "Résultat", "Journal"])
 
-# --- State
 if "res" not in st.session_state: st.session_state.res = None
 if "user_type_map" not in st.session_state: st.session_state.user_type_map = {}
 
@@ -48,29 +52,25 @@ with tab_map:
     st.subheader("1) Mapping des colonnes")
     mapping = auto_map(df)
 
-    # Charger un preset
     c1, c2 = st.columns([1,1])
     with c1:
-        preset_file = st.file_uploader("Charger un preset de mapping (.json)", type=["json"], key="preset_up")
+        preset_file = st.file_uploader("Charger un preset (.json)", type=["json"], key="preset_up")
         if preset_file:
             try:
                 preset_map = mapping_from_json(preset_file.read())
-                # ne garde que les colonnes existantes
                 mapping = {k:v for k,v in preset_map.items() if v in df.columns}
                 st.success("Preset chargé.")
             except Exception as e:
                 st.error(f"Preset invalide : {e}")
     with c2:
-        if st.session_state.res:
-            st.download_button(
-                "Enregistrer le preset courant",
-                data=mapping_to_json(mapping),
-                file_name="mapping_preset.json",
-                mime="application/json",
-                use_container_width=True
-            )
+        st.download_button(
+            "Enregistrer le preset courant",
+            data=mapping_to_json(mapping),
+            file_name="mapping_preset.json",
+            mime="application/json",
+            use_container_width=True
+        )
 
-    # Éditeur compact
     template_cols = list(set(list(mapping.keys())))
     choices = ["(aucune)"] + [str(c) for c in df.columns]
     map_df = pd.DataFrame(
@@ -93,14 +93,12 @@ with tab_map:
     key_type = "Type d'utilisateur* (Diplômé [1] / Etudiant [5])"
     if key_type in mapping and mapping[key_type] in df.columns:
         col_type = mapping[key_type]
-        vals = (
-            df[col_type].dropna().astype(str).str.strip().unique().tolist()
-        )
+        vals = df[col_type].dropna().astype(str).str.strip().unique().tolist()
         vals = [v for v in vals if v not in ("1","5","")]
         if vals:
-            ccols = st.columns(min(3, len(vals)))
+            cols = st.columns(min(3, len(vals)))
             for i, v in enumerate(vals):
-                with ccols[i % len(ccols)]:
+                with cols[i % len(cols)]:
                     choice = st.selectbox(
                         f"'{v}' →",
                         ["(laisser tel quel)","1 (Diplômé)","5 (Étudiant)","(personnalisé)"],
@@ -111,25 +109,67 @@ with tab_map:
                     elif choice == "(personnalisé)":
                         custom = st.text_input(f"Valeur personnalisée pour '{v}'", key=f"type_map_custom_{v}")
                         if custom: user_type_map[v] = custom
-
     st.session_state.user_type_map = user_type_map
 
     st.divider()
     st.subheader("3) Aperçu source (10 lignes)")
     st.dataframe(df.head(10), use_container_width=True)
 
+    with st.expander("Diagnostic rapide (pré-traitement)"):
+        nb_civ_vide = 0
+        if "Civilité (M. / Mme)" in mapping and mapping["Civilité (M. / Mme)"] in df.columns:
+            civ_col = df[mapping["Civilité (M. / Mme)"]].astype(str).str.strip()
+            nb_civ_vide = int((civ_col == "").sum())
+        st.write(f"• Civilité manquante (brut) : **{nb_civ_vide}**")
+        if key_type in mapping and mapping[key_type] in df.columns:
+            tcol = df[mapping[key_type]].astype(str).str.strip()
+            nb_type_vide = int((tcol == "").sum())
+            st.write(f"• Type utilisateur manquant (brut) : **{nb_type_vide}**")
+
     run = st.button("Lancer le traitement", type="primary")
 
+# Traduction des choix “type manquant”
+default_user_type_when_missing = None
+require_user_type_choice = False
+if missing_type_mode == "Forcer 1 (Diplômé)":
+    default_user_type_when_missing = "1"
+elif missing_type_mode == "Forcer 5 (Étudiant)":
+    default_user_type_when_missing = "5"
+elif missing_type_mode == "Me demander":
+    require_user_type_choice = True
+
 if run:
-    with st.spinner("Traitement…"):
+    try:
         out_df, stats, errors, warnings = process(
             df, mapping,
             correct_dates=correct_dates, uppercase_names=uppercase_names,
             user_type_map=st.session_state.user_type_map,
             auto_civility=auto_civility, auto_user_type=auto_user_type,
-            strict=strict
+            strict=strict,
+            civil_fallback=(civil_fallback if civil_fallback in ("M.","Mme") else ""),
+            default_user_type_when_missing=default_user_type_when_missing,
+            require_user_type_choice=require_user_type_choice
         )
-    st.session_state.res = (out_df, stats, errors, warnings)
+        st.session_state.res = (out_df, stats, errors, warnings)
+    except ValueError as e:
+        if "TYPE_UTILISATEUR_MANQUANT" in str(e):
+            st.warning("Des lignes n’ont pas de **Type utilisateur**. Choisissez un fallback :")
+            choice = st.radio("Compléter les types manquants par :", ["1 (Diplômé)", "5 (Étudiant)"], horizontal=True)
+            if st.button("Appliquer et relancer"):
+                fallback = "1" if choice.startswith("1") else "5"
+                out_df, stats, errors, warnings = process(
+                    df, mapping,
+                    correct_dates=correct_dates, uppercase_names=uppercase_names,
+                    user_type_map=st.session_state.user_type_map,
+                    auto_civility=auto_civility, auto_user_type=auto_user_type,
+                    strict=strict,
+                    civil_fallback=(civil_fallback if civil_fallback in ("M.","Mme") else ""),
+                    default_user_type_when_missing=fallback,
+                    require_user_type_choice=False
+                )
+                st.session_state.res = (out_df, stats, errors, warnings)
+        else:
+            st.error(str(e))
 
 if st.session_state.res:
     out_df, stats, errors, warnings = st.session_state.res
