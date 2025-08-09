@@ -3,15 +3,14 @@ import streamlit as st
 import pandas as pd
 from core import (
     read_table, auto_map, process,
-    to_csv_bytes, to_excel_bytes, report_html_bytes,
-    mapping_to_json, mapping_from_json
+    to_csv_bytes, to_excel_bytes
 )
 
 st.set_page_config(page_title="Import Utilisateur", page_icon="📦", layout="wide")
 st.title("📦 Import Utilisateur")
 st.caption("Uploader → Mapper → Formater → Télécharger")
 
-# ---- Sidebar : options
+# ---- Sidebar : options essentielles
 with st.sidebar:
     st.header("Options")
     correct_dates   = st.checkbox("Corriger les dates", value=True)
@@ -26,8 +25,6 @@ with st.sidebar:
         horizontal=False
     )
     out_fmt         = st.radio("Format de sortie", ["CSV", "Excel"], horizontal=True)
-    st.divider()
-    st.caption("Astuce : enregistrez un preset de mapping pour les prochains imports.")
 
 uploaded = st.file_uploader("Déposez un fichier (.csv / .xlsx)", type=["csv", "xlsx", "xls"])
 if not uploaded:
@@ -52,25 +49,7 @@ with tab_map:
     st.subheader("1) Mapping des colonnes")
     mapping = auto_map(df)
 
-    c1, c2 = st.columns([1,1])
-    with c1:
-        preset_file = st.file_uploader("Charger un preset (.json)", type=["json"], key="preset_up")
-        if preset_file:
-            try:
-                preset_map = mapping_from_json(preset_file.read())
-                mapping = {k:v for k,v in preset_map.items() if v in df.columns}
-                st.success("Preset chargé.")
-            except Exception as e:
-                st.error(f"Preset invalide : {e}")
-    with c2:
-        st.download_button(
-            "Enregistrer le preset courant",
-            data=mapping_to_json(mapping),
-            file_name="mapping_preset.json",
-            mime="application/json",
-            use_container_width=True
-        )
-
+    # Éditeur de mapping (sans presets)
     template_cols = list(set(list(mapping.keys())))
     choices = ["(aucune)"] + [str(c) for c in df.columns]
     map_df = pd.DataFrame(
@@ -114,17 +93,6 @@ with tab_map:
     st.divider()
     st.subheader("3) Aperçu source (10 lignes)")
     st.dataframe(df.head(10), use_container_width=True)
-
-    with st.expander("Diagnostic rapide (pré-traitement)"):
-        nb_civ_vide = 0
-        if "Civilité (M. / Mme)" in mapping and mapping["Civilité (M. / Mme)"] in df.columns:
-            civ_col = df[mapping["Civilité (M. / Mme)"]].astype(str).str.strip()
-            nb_civ_vide = int((civ_col == "").sum())
-        st.write(f"• Civilité manquante (brut) : **{nb_civ_vide}**")
-        if key_type in mapping and mapping[key_type] in df.columns:
-            tcol = df[mapping[key_type]].astype(str).str.strip()
-            nb_type_vide = int((tcol == "").sum())
-            st.write(f"• Type utilisateur manquant (brut) : **{nb_type_vide}**")
 
     run = st.button("Lancer le traitement", type="primary")
 
@@ -188,16 +156,11 @@ if st.session_state.res:
         st.dataframe(out_df.head(30), use_container_width=True)
 
         st.divider()
-        cdl1, cdl2, cdl3 = st.columns([1,1,1])
         if out_fmt == "CSV":
-            cdl1.download_button("Télécharger CSV", to_csv_bytes(out_df), "import_formate.csv", "text/csv", use_container_width=True)
+            st.download_button("Télécharger CSV", to_csv_bytes(out_df), "import_formate.csv", "text/csv", use_container_width=True)
         else:
-            cdl1.download_button("Télécharger Excel", to_excel_bytes(out_df), "import_formate.xlsx",
-                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-        cdl2.download_button("Télécharger le rapport HTML",
-                             report_html_bytes(out_df, stats, errors, warnings),
-                             "rapport_import.html", "text/html", use_container_width=True)
-        cdl3.button("Réinitialiser", on_click=lambda: st.session_state.pop("res", None), use_container_width=True)
+            st.download_button("Télécharger Excel", to_excel_bytes(out_df), "import_formate.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
     with tab_log:
         if warnings:
