@@ -193,8 +193,11 @@ def format_date(value: str) -> str:
 EMAIL_RE = re.compile(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", re.I)
 
 def format_email(value: str, warnings, rownum, strict: bool) -> str:
+    if value is None or pd.isna(value):
+        return ""
     s = str(value).strip().lower()
-    if not s: return ""
+    if not s:
+        return ""
     if not EMAIL_RE.match(s):
         msg = f"Ligne {rownum}: Email suspect '{value}'"
         if strict: raise ValueError(msg)
