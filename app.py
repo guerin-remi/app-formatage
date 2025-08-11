@@ -85,12 +85,29 @@ def apply_automatic_suggestions(df, mapping, session_state):
     
     for template_col, source_col in mapping.items():
         if source_col in df.columns:
-            # Appliquer les suggestions de mapping de valeurs
-            suggestions_key = f"suggestions_{template_col}"
-            if suggestions_key in session_state:
-                value_mapping = session_state[suggestions_key]
+            # Pour la civilité, combiner les suggestions de différents niveaux
+            if template_col == 'Civilité (M. / Mme)':
+                value_mapping = {}
+                
+                # Récupérer les suggestions haute confiance
+                high_key = f"suggestions_{template_col}_high"
+                if high_key in session_state:
+                    value_mapping.update(session_state[high_key])
+                
+                # Récupérer les suggestions moyenne confiance
+                medium_key = f"suggestions_{template_col}_medium"
+                if medium_key in session_state:
+                    value_mapping.update(session_state[medium_key])
+                
                 if value_mapping:
                     df_copy[source_col] = df_copy[source_col].replace(value_mapping)
+            else:
+                # Traitement normal pour les autres colonnes
+                suggestions_key = f"suggestions_{template_col}"
+                if suggestions_key in session_state:
+                    value_mapping = session_state[suggestions_key]
+                    if value_mapping:
+                        df_copy[source_col] = df_copy[source_col].replace(value_mapping)
     
     return df_copy
 
