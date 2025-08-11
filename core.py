@@ -271,137 +271,7 @@ def suggest_user_type(val: str) -> str | None:
     if any(k in v for k in ['etudiant','étudiant','eleve','élève','student','stagiaire']): return '5'
     return None
 
-# ---------- Process principal ----------
-def process(
-    df: pd.DataFrame, mapping: dict,
-    correct_dates: bool=True, uppercase_names: bool=True,
-    user_type_map: dict | None=None,
-    auto_civility: bool=True, auto_user_type: bool=True,
-    strict: bool=False,
-    civil_fallback: str="",                    # "", "M.", "Mme"
-    default_user_type_when_missing: str | None=None,  # None / "1" / "5"
-    require_user_type_choice: bool=False
-):
-    user_type_map = user_type_map or {}
-    errors, warnings = [], []
-    out_rows = [TEMPLATE_COLUMNS, ['-']*len(TEMPLATE_COLUMNS)]
-    stats = {'total_rows':0,'valid_rows':0,'corrected_fields':0}
-
-    for ridx, (_,row) in enumerate(df.iterrows(), start=2):
-        stats['total_rows'] += 1
-        out = ['']*len(TEMPLATE_COLUMNS)
-        row_has_data = False
-
-        raw = {}
-        for i,t in enumerate(TEMPLATE_COLUMNS):
-            val = row[mapping[t]] if t in mapping and mapping[t] in df.columns else ''
-            if pd.notna(val) and str(val).strip(): row_has_data = True
-            raw[i] = val
-
-        prenom_raw = str(raw.get(3,"") or "").strip()
-
-        try:
-            for i,t in enumerate(TEMPLATE_COLUMNS):
-                s = str(raw.get(i,"") if raw.get(i) is not None else "").strip()
-                new = s
-
-                if i == 2:  # Civilité
-                    new = format_civilite(s)
-                    if not new and auto_civility and prenom_raw:
-                        ded = deduce_civility_from_firstname(prenom_raw)
-                        if ded:
-                            new = ded
-                            warnings.append(f"Ligne {ridx}: Civilité déduite depuis le prénom '{prenom_raw}' → '{ded}'")
-                    if not new and civil_fallback in ("M.","Mme"):
-                        new = civil_fallback
-                        warnings.append(f"Ligne {ridx}: Civilité manquante, fallback '{civil_fallback}'")
-
-                elif i == 3:  # Prénom
-                    new = s.title() if s else s
-
-                elif i in [4,5]:  # Noms
-                    new = s.upper() if (s and uppercase_names) else s
-
-                elif i == 6:  # Type utilisateur
-                    if s in ['1','5']:
-                        new = s
-                    elif s in user_type_map:
-                        new = user_type_map[s]
-                        warnings.append(f"Ligne {ridx}: Type '{s}' → '{new}' (mapping)")
-                    elif auto_user_type:
-                        sug = suggest_user_type(s)
-                        if sug:
-                            new = sug
-                            warnings.append(f"Ligne {ridx}: Type '{s}' → '{sug}' (déduit)")
-                        elif mapping.get("Type d'utilisateur* (Diplômé [1] / Etudiant [5])") is None:
-                            has_company = any(str(raw.get(j,"")).strip() for j in [31,34])  # Entreprise / SIRET
-                            new = '1' if has_company else s
-
-                elif i in [7,13,14,44,45]:  # dates
-                    new = format_date(s) if (s and correct_dates) else s
-                    if strict and new and not re.match(r'^\d{2}/\d{2}/\d{4}$', new):
-                        raise ValueError(f"Ligne {ridx}: Date invalide '{s}'")
-
-                elif i in [8,9,43]:  # emails
-                    new = format_email(s, warnings, ridx, strict)
-
-                elif i in [15,23]:  # booléens
-                    new = format_boolean(s)
-
-                elif i in [22,40]:  # pays
-                    new = format_country(s, warnings, ridx, strict) if s else s
-
-                elif i in [24,25,41,42]:  # téléphones
-                    new = format_phone(s, warnings, ridx, strict) if s else s
-
-                elif i == 34:  # SIRET
-                    new = format_siret(s, warnings, ridx, strict) if s else s
-
-                out[i] = new
-                if new != s and s != "":
-                    stats['corrected_fields'] += 1
-
-        except Exception as e:
-            errors.append(str(e))
-
-        # Post-traitement Type utilisateur manquant
-        type_idx = 6
-        if row_has_data:
-            if not out[type_idx] or out[type_idx] not in ("1","5"):
-                if require_user_type_choice and default_user_type_when_missing is None:
-                    errors.append("TYPE_UTILISATEUR_MANQUANT")
-                elif default_user_type_when_missing in ("1","5"):
-                    out[type_idx] = default_user_type_when_missing
-                    warnings.append(f"Ligne {ridx}: Type manquant → fallback '{default_user_type_when_missing}'")
-
-        if row_has_data:
-            if (not out[3]) or (not out[4]):
-                errors.append(f"Ligne {ridx}: Prénom/Nom manquant")
-            else:
-                stats['valid_rows'] += 1
-            out_rows.append(out)
-
-    df_out = pd.DataFrame(out_rows[2:], columns=out_rows[0])
-    return df_out, stats, errors, warnings
-
-# ---------- Exports ----------
-def to_csv_bytes(df: pd.DataFrame) -> bytes:
-    return df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-
-def to_excel_bytes(df: pd.DataFrame) -> bytes:
-    bio = BytesIO()
-    with pd.ExcelWriter(bio, engine='openpyxl') as w:
-        df.to_excel(w, index=False, sheet_name='Import Utilisateur')
-        pd.DataFrame([['Code','Libellé'],['1','Diplômé'],['5','Étudiant']]).to_excel(
-            w, index=False, header=False, sheet_name='Type_Utilisateur'
-        )
-    bio.seek(0)
-    return bio.getvalue()
-
-
-# Ajouter ces fonctions dans core.py après les fonctions existantes
-
-# ========== SUGGESTIONS INTELLIGENTES ==========
+# ========== NOUVELLES FONCTIONS D'AMÉLIORATION ==========
 
 def suggest_civilite(val: str) -> str | None:
     """Suggère une civilité basée sur des variantes courantes"""
@@ -628,3 +498,130 @@ def generate_data_quality_report(df: pd.DataFrame, mapping: dict) -> dict:
     report['quality_score'] = max(0, quality_score)
     
     return report
+
+# ---------- Process principal ----------
+def process(
+    df: pd.DataFrame, mapping: dict,
+    correct_dates: bool=True, uppercase_names: bool=True,
+    user_type_map: dict | None=None,
+    auto_civility: bool=True, auto_user_type: bool=True,
+    strict: bool=False,
+    civil_fallback: str="",                    # "", "M.", "Mme"
+    default_user_type_when_missing: str | None=None,  # None / "1" / "5"
+    require_user_type_choice: bool=False
+):
+    user_type_map = user_type_map or {}
+    errors, warnings = [], []
+    out_rows = [TEMPLATE_COLUMNS, ['-']*len(TEMPLATE_COLUMNS)]
+    stats = {'total_rows':0,'valid_rows':0,'corrected_fields':0}
+
+    for ridx, (_,row) in enumerate(df.iterrows(), start=2):
+        stats['total_rows'] += 1
+        out = ['']*len(TEMPLATE_COLUMNS)
+        row_has_data = False
+
+        raw = {}
+        for i,t in enumerate(TEMPLATE_COLUMNS):
+            val = row[mapping[t]] if t in mapping and mapping[t] in df.columns else ''
+            if pd.notna(val) and str(val).strip(): row_has_data = True
+            raw[i] = val
+
+        prenom_raw = str(raw.get(3,"") or "").strip()
+
+        try:
+            for i,t in enumerate(TEMPLATE_COLUMNS):
+                s = str(raw.get(i,"") if raw.get(i) is not None else "").strip()
+                new = s
+
+                if i == 2:  # Civilité
+                    new = format_civilite(s)
+                    if not new and auto_civility and prenom_raw:
+                        ded = deduce_civility_from_firstname(prenom_raw)
+                        if ded:
+                            new = ded
+                            warnings.append(f"Ligne {ridx}: Civilité déduite depuis le prénom '{prenom_raw}' → '{ded}'")
+                    if not new and civil_fallback in ("M.","Mme"):
+                        new = civil_fallback
+                        warnings.append(f"Ligne {ridx}: Civilité manquante, fallback '{civil_fallback}'")
+
+                elif i == 3:  # Prénom
+                    new = s.title() if s else s
+
+                elif i in [4,5]:  # Noms
+                    new = s.upper() if (s and uppercase_names) else s
+
+                elif i == 6:  # Type utilisateur
+                    if s in ['1','5']:
+                        new = s
+                    elif s in user_type_map:
+                        new = user_type_map[s]
+                        warnings.append(f"Ligne {ridx}: Type '{s}' → '{new}' (mapping)")
+                    elif auto_user_type:
+                        sug = suggest_user_type(s)
+                        if sug:
+                            new = sug
+                            warnings.append(f"Ligne {ridx}: Type '{s}' → '{sug}' (déduit)")
+                        elif mapping.get("Type d'utilisateur* (Diplômé [1] / Etudiant [5])") is None:
+                            has_company = any(str(raw.get(j,"")).strip() for j in [31,34])  # Entreprise / SIRET
+                            new = '1' if has_company else s
+
+                elif i in [7,13,14,44,45]:  # dates
+                    new = format_date(s) if (s and correct_dates) else s
+                    if strict and new and not re.match(r'^\d{2}/\d{2}/\d{4}$', new):
+                        raise ValueError(f"Ligne {ridx}: Date invalide '{s}'")
+
+                elif i in [8,9,43]:  # emails
+                    new = format_email(s, warnings, ridx, strict)
+
+                elif i in [15,23]:  # booléens
+                    new = format_boolean(s)
+
+                elif i in [22,40]:  # pays
+                    new = format_country(s, warnings, ridx, strict) if s else s
+
+                elif i in [24,25,41,42]:  # téléphones
+                    new = format_phone(s, warnings, ridx, strict) if s else s
+
+                elif i == 34:  # SIRET
+                    new = format_siret(s, warnings, ridx, strict) if s else s
+
+                out[i] = new
+                if new != s and s != "":
+                    stats['corrected_fields'] += 1
+
+        except Exception as e:
+            errors.append(str(e))
+
+        # Post-traitement Type utilisateur manquant
+        type_idx = 6
+        if row_has_data:
+            if not out[type_idx] or out[type_idx] not in ("1","5"):
+                if require_user_type_choice and default_user_type_when_missing is None:
+                    errors.append("TYPE_UTILISATEUR_MANQUANT")
+                elif default_user_type_when_missing in ("1","5"):
+                    out[type_idx] = default_user_type_when_missing
+                    warnings.append(f"Ligne {ridx}: Type manquant → fallback '{default_user_type_when_missing}'")
+
+        if row_has_data:
+            if (not out[3]) or (not out[4]):
+                errors.append(f"Ligne {ridx}: Prénom/Nom manquant")
+            else:
+                stats['valid_rows'] += 1
+            out_rows.append(out)
+
+    df_out = pd.DataFrame(out_rows[2:], columns=out_rows[0])
+    return df_out, stats, errors, warnings
+
+# ---------- Exports ----------
+def to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+
+def to_excel_bytes(df: pd.DataFrame) -> bytes:
+    bio = BytesIO()
+    with pd.ExcelWriter(bio, engine='openpyxl') as w:
+        df.to_excel(w, index=False, sheet_name='Import Utilisateur')
+        pd.DataFrame([['Code','Libellé'],['1','Diplômé'],['5','Étudiant']]).to_excel(
+            w, index=False, header=False, sheet_name='Type_Utilisateur'
+        )
+    bio.seek(0)
+    return bio.getvalue()
