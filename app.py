@@ -4,7 +4,6 @@ import pandas as pd
 from core import (
     read_table, auto_map, process,
     to_csv_bytes, to_excel_bytes,
-    # Nouvelles fonctions d'amélioration
     suggest_civilite, suggest_oui_non, suggest_country_code,
     clean_phone_number, detect_date_format, 
     analyze_column_values, generate_data_quality_report
