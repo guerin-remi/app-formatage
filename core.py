@@ -397,3 +397,234 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
         )
     bio.seek(0)
     return bio.getvalue()
+
+
+# Ajouter ces fonctions dans core.py après les fonctions existantes
+
+# ========== SUGGESTIONS INTELLIGENTES ==========
+
+def suggest_civilite(val: str) -> str | None:
+    """Suggère une civilité basée sur des variantes courantes"""
+    v = str(val).lower().strip()
+    
+    # Variantes courantes
+    CIVILITE_PATTERNS = {
+        'M.': ['m', 'mr', 'monsieur', 'homme', 'h', 'm.', 'masculin', 'male', 'mister'],
+        'Mme': ['mme', 'madame', 'femme', 'f', 'mlle', 'mademoiselle', 'feminin', 'female', 'mrs', 'miss', 'ms']
+    }
+    
+    for correct, patterns in CIVILITE_PATTERNS.items():
+        if v in patterns or any(p in v for p in patterns if len(p) > 2):
+            return correct
+    return None
+
+def suggest_oui_non(val: str) -> str | None:
+    """Suggère 1 ou 0 pour les champs booléens"""
+    v = str(val).lower().strip()
+    
+    OUI_PATTERNS = ['oui', 'o', 'yes', 'y', '1', 'true', 'vrai', 'x', 'ok', 'validé', 'obtenu', 'diplômé']
+    NON_PATTERNS = ['non', 'n', 'no', '0', 'false', 'faux', 'nok', 'ko', 'pas obtenu', 'en cours']
+    
+    if v in OUI_PATTERNS or any(p in v for p in ['oui', 'yes', 'validé', 'obtenu']):
+        return '1'
+    if v in NON_PATTERNS or any(p in v for p in ['non', 'no', 'pas', 'aucun']):
+        return '0'
+    return None
+
+def suggest_country_code(val: str) -> str | None:
+    """Suggère un code pays ISO à partir d'un nom de pays"""
+    v = str(val).upper().strip()
+    
+    # Table étendue des pays courants
+    COUNTRY_MAPPINGS = {
+        'FR': ['FRANCE', 'FR', 'FRA', 'FRENCH', 'FRANÇAIS', 'FRANCAISE'],
+        'BE': ['BELGIQUE', 'BE', 'BEL', 'BELGIUM', 'BELGE'],
+        'CH': ['SUISSE', 'CH', 'CHE', 'SWITZERLAND', 'SWISS', 'SCHWEIZ'],
+        'DE': ['ALLEMAGNE', 'DE', 'DEU', 'GERMANY', 'DEUTSCHLAND', 'ALLEMAND'],
+        'ES': ['ESPAGNE', 'ES', 'ESP', 'SPAIN', 'ESPAÑA', 'ESPAGNOL'],
+        'IT': ['ITALIE', 'IT', 'ITA', 'ITALY', 'ITALIA', 'ITALIEN'],
+        'GB': ['ROYAUME-UNI', 'GB', 'GBR', 'UK', 'UNITED KINGDOM', 'ANGLETERRE', 'ENGLAND'],
+        'US': ['ETATS-UNIS', 'US', 'USA', 'UNITED STATES', 'AMERICA', 'AMERIQUE'],
+        'CA': ['CANADA', 'CA', 'CAN', 'CANADIEN'],
+        'LU': ['LUXEMBOURG', 'LU', 'LUX', 'LUXEMBOURGEOIS'],
+        'NL': ['PAYS-BAS', 'NL', 'NLD', 'NETHERLANDS', 'HOLLANDE', 'HOLLAND'],
+        'PT': ['PORTUGAL', 'PT', 'PRT', 'PORTUGAIS'],
+        'MA': ['MAROC', 'MA', 'MAR', 'MOROCCO', 'MAROCAIN'],
+        'DZ': ['ALGERIE', 'DZ', 'DZA', 'ALGERIA', 'ALGERIEN'],
+        'TN': ['TUNISIE', 'TN', 'TUN', 'TUNISIA', 'TUNISIEN'],
+    }
+    
+    for code, patterns in COUNTRY_MAPPINGS.items():
+        if v in patterns or any(p in v for p in patterns if len(p) > 3):
+            return code
+    
+    # Si c'est déjà un code 2 lettres, le retourner
+    if len(v) == 2 and v.isalpha():
+        return v
+    
+    return None
+
+def clean_phone_number(val: str) -> str:
+    """Nettoie et formate un numéro de téléphone"""
+    # Garder seulement les chiffres
+    cleaned = re.sub(r'\D', '', str(val))
+    
+    # Gérer les préfixes internationaux courants
+    if cleaned.startswith('33') and len(cleaned) == 11:  # France
+        cleaned = '0' + cleaned[2:]
+    elif cleaned.startswith('0033') and len(cleaned) == 13:
+        cleaned = '0' + cleaned[4:]
+    elif cleaned.startswith('32') and len(cleaned) == 11:  # Belgique
+        cleaned = '0' + cleaned[2:]
+    elif cleaned.startswith('41') and len(cleaned) == 11:  # Suisse
+        cleaned = '0' + cleaned[2:]
+    
+    # Formater avec espaces pour la lisibilité (optionnel)
+    if len(cleaned) == 10 and cleaned.startswith('0'):
+        # Format français : 01 23 45 67 89
+        formatted = ' '.join([cleaned[i:i+2] for i in range(0, 10, 2)])
+        return formatted
+    
+    return cleaned
+
+def detect_date_format(sample_dates: list) -> str:
+    """Détecte automatiquement le format de date utilisé"""
+    formats_to_try = [
+        ('%d/%m/%Y', 'JJ/MM/AAAA'),
+        ('%d-%m-%Y', 'JJ-MM-AAAA'),
+        ('%Y/%m/%d', 'AAAA/MM/JJ'),
+        ('%Y-%m-%d', 'AAAA-MM-JJ'),
+        ('%m/%d/%Y', 'MM/JJ/AAAA'),
+        ('%d.%m.%Y', 'JJ.MM.AAAA'),
+    ]
+    
+    format_scores = {}
+    
+    for date_str in sample_dates[:10]:  # Tester sur 10 échantillons max
+        if pd.isna(date_str) or not str(date_str).strip():
+            continue
+            
+        for fmt, name in formats_to_try:
+            try:
+                datetime.strptime(str(date_str).strip(), fmt)
+                format_scores[name] = format_scores.get(name, 0) + 1
+            except:
+                pass
+    
+    if format_scores:
+        return max(format_scores, key=format_scores.get)
+    return "Format non détecté"
+
+def analyze_column_values(df: pd.DataFrame, col_name: str) -> dict:
+    """Analyse les valeurs d'une colonne pour suggérer des transformations"""
+    col = df[col_name]
+    values = col.dropna().astype(str).str.strip()
+    
+    analysis = {
+        'total': len(col),
+        'non_empty': len(values),
+        'unique': values.nunique(),
+        'most_common': values.value_counts().head(5).to_dict() if len(values) > 0 else {},
+        'suggestions': []
+    }
+    
+    # Détection de patterns
+    if values.nunique() < 10:  # Peu de valeurs uniques = probablement catégoriel
+        analysis['type'] = 'categorical'
+        
+        # Suggérer des mappings pour les valeurs ambiguës
+        for val in values.unique():
+            # Pour civilité
+            if col_name.lower() in ['civilite', 'civilité', 'genre', 'titre']:
+                suggestion = suggest_civilite(val)
+                if suggestion and suggestion != val:
+                    analysis['suggestions'].append({
+                        'original': val,
+                        'suggested': suggestion,
+                        'confidence': 'high'
+                    })
+            
+            # Pour booléens
+            elif any(word in col_name.lower() for word in ['obtenu', 'npai', 'validé']):
+                suggestion = suggest_oui_non(val)
+                if suggestion and suggestion != val:
+                    analysis['suggestions'].append({
+                        'original': val,
+                        'suggested': suggestion,
+                        'confidence': 'high'
+                    })
+    
+    # Détection de dates
+    elif any(word in col_name.lower() for word in ['date', 'naissance', 'obtention', 'integration']):
+        analysis['type'] = 'date'
+        analysis['format_detected'] = detect_date_format(values.tolist())
+    
+    # Détection d'emails
+    elif '@' in ''.join(values.head(10).tolist()):
+        analysis['type'] = 'email'
+        invalid_emails = []
+        for val in values.head(20):  # Vérifier les 20 premiers
+            if not re.match(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", val, re.I):
+                invalid_emails.append(val)
+        if invalid_emails:
+            analysis['invalid_examples'] = invalid_emails[:5]
+    
+    # Détection de téléphones
+    elif any(re.search(r'\d{8,}', str(val)) for val in values.head(10)):
+        analysis['type'] = 'phone'
+        # Exemples de numéros mal formatés
+        needs_cleaning = []
+        for val in values.head(20):
+            cleaned = clean_phone_number(val)
+            if cleaned != val:
+                needs_cleaning.append({'original': val, 'cleaned': cleaned})
+        if needs_cleaning:
+            analysis['needs_cleaning'] = needs_cleaning[:5]
+    
+    return analysis
+
+def generate_data_quality_report(df: pd.DataFrame, mapping: dict) -> dict:
+    """Génère un rapport de qualité des données avec suggestions"""
+    report = {
+        'summary': {
+            'total_rows': len(df),
+            'total_columns': len(df.columns),
+            'mapped_columns': len(mapping),
+            'unmapped_columns': len(df.columns) - len(mapping)
+        },
+        'column_analysis': {},
+        'global_suggestions': []
+    }
+    
+    # Analyser chaque colonne mappée
+    for template_col, source_col in mapping.items():
+        if source_col in df.columns:
+            analysis = analyze_column_values(df, source_col)
+            report['column_analysis'][template_col] = analysis
+            
+            # Ajouter des suggestions globales
+            if analysis.get('suggestions'):
+                report['global_suggestions'].append({
+                    'column': template_col,
+                    'type': 'value_mapping',
+                    'suggestions': analysis['suggestions']
+                })
+    
+    # Score de qualité global
+    quality_score = 100
+    
+    # Pénalités
+    if report['summary']['unmapped_columns'] > 0:
+        quality_score -= report['summary']['unmapped_columns'] * 2
+    
+    for col, analysis in report['column_analysis'].items():
+        # Pénalité pour données manquantes
+        empty_ratio = 1 - (analysis['non_empty'] / analysis['total'])
+        if empty_ratio > 0.5:
+            quality_score -= 10
+        elif empty_ratio > 0.2:
+            quality_score -= 5
+    
+    report['quality_score'] = max(0, quality_score)
+    
+    return report
